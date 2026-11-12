@@ -116,13 +116,19 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Semgrep (pinned, reused between runs)
+      - name: Install Semgrep
         shell: bash
         run: |
-          if [ "$(semgrep --version 2>/dev/null)" != "${SEMGREP_VERSION}" ]; then
-            python -m pip install --disable-pip-version-check -q "semgrep==${SEMGREP_VERSION}"
+          set -euo pipefail
+          VENV="${RUNNER_TOOL_CACHE}/semgrep/${SEMGREP_VERSION}"
+          if [ "$("$VENV/bin/semgrep" --version 2>/dev/null || true)" != "${SEMGREP_VERSION}" ]; then
+            rm -rf "$VENV"
+            python -m venv "$VENV"
+            "$VENV/bin/pip" install --disable-pip-version-check -q \
+              "semgrep==${SEMGREP_VERSION}" "setuptools<81"
           fi
-          semgrep --version
+          echo "$VENV/bin" >> "$GITHUB_PATH"
+          "$VENV/bin/semgrep" --version
 
       - name: Test custom rule
         shell: bash
