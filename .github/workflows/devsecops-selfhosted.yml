@@ -43,7 +43,7 @@ jobs:
     name: "G1 · Conftest (Policy-as-Code)"
     # Không chạy mã của PR từ fork trên máy trong lab
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
     steps:
       - name: Checkout source
@@ -104,7 +104,7 @@ jobs:
   sast-gate:
     name: "G2 · Semgrep (SQL Injection)"
     needs: [policy-gate]
-    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     steps:
       - name: Checkout source
@@ -166,7 +166,7 @@ jobs:
   tds-gate:
     name: "G3 · Test-Driven Security (POL-07)"
     needs: [sast-gate]
-    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     steps:
       - name: Checkout source
@@ -215,7 +215,7 @@ jobs:
   inspec-gate:
     name: "G4 · InSpec (đường dẫn nội bộ)"
     needs: [tds-gate]
-    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     env:
       G4_PROJECT: juice-shop-g4-${{ github.run_id }}
@@ -280,7 +280,7 @@ jobs:
     name: "CD · Deploy Juice Shop"
     needs: [policy-gate, sast-gate, tds-gate, inspec-gate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 90
     concurrency:
       group: deploy-juice-shop
