@@ -121,14 +121,23 @@ jobs:
         run: |
           set -euo pipefail
           VENV="${RUNNER_TOOL_CACHE}/semgrep/${SEMGREP_VERSION}"
-          if [ "$("$VENV/bin/semgrep" --version 2>/dev/null || true)" != "${SEMGREP_VERSION}" ]; then
+
+          # Gỡ bản semgrep cũ cài thẳng vào Python của setup-python (nếu còn)
+          python -m pip uninstall -y -q semgrep 2>/dev/null || true
+
+          # Venv phải đứng đầu PATH ngay trong step này để osemgrep tìm đúng pysemgrep
+          export PATH="$VENV/bin:$PATH"
+
+          if [ "$(semgrep --version 2>/dev/null || true)" != "${SEMGREP_VERSION}" ]; then
             rm -rf "$VENV"
             python -m venv "$VENV"
             "$VENV/bin/pip" install --disable-pip-version-check -q \
               "semgrep==${SEMGREP_VERSION}" "setuptools<81"
           fi
-          echo "$VENV/bin" >> "$GITHUB_PATH"
-          "$VENV/bin/semgrep" --version
+
+          echo "$VENV/bin" >> "$GITHUB_PATH"   # cho các step sau
+          command -v semgrep pysemgrep
+          semgrep --version
 
       - name: Test custom rule
         shell: bash
