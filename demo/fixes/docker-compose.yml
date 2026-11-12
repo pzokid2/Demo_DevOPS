@@ -1,0 +1,30 @@
+# docker-compose.yml – cấu hình triển khai Juice Shop (BẢN ĐÃ SỬA, qua G1 mới được deploy)
+name: juice-shop-cd
+
+services:
+  juice-shop:
+    build: .
+    image: juice-shop-cd:${IMAGE_TAG:-local}
+    container_name: juice-shop-cd-lab
+    restart: unless-stopped
+    # Không publish cổng: chỉ Nginx trong cùng mạng compose truy cập được (POL-03)
+    cap_drop: [ALL]                  # POL-02
+    security_opt:
+      - "no-new-privileges:true"     # POL-02
+    mem_limit: 768m
+    cpus: 0.75
+    pids_limit: 200
+
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.27-alpine   # chạy non-root, nghe cổng 8080
+    container_name: juice-shop-cd-nginx
+    restart: unless-stopped
+    depends_on: [juice-shop]
+    ports:
+      - "127.0.0.1:3002:8080"        # POL-03; cho máy khác trong lab vào: "192.168.1.10:80:8080"
+    volumes:
+      - ./deploy/nginx/juice-shop.conf:/etc/nginx/conf.d/default.conf:ro
+    cap_drop: [ALL]                  # POL-02
+    security_opt:
+      - "no-new-privileges:true"     # POL-02
+    mem_limit: 128m

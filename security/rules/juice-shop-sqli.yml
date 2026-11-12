@@ -1,0 +1,24 @@
+# security/rules/juice-shop-sqli.yml – rule Semgrep của nhóm (Security-as-Code, gate G2)
+# Kiểm thử rule: semgrep --test security/rules/
+rules:
+  - id: juice-shop-sqli-raw-query
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      POL-05: Truy vấn SQL ghép chuỗi trực tiếp từ dữ liệu đầu vào (CWE-89).
+      Dùng replacements/bind của Sequelize hoặc truy vấn qua model.
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A05:2025 Injection"
+      policy: "POL-05; GDPR Art.32; PCI DSS 6.2.4; Luật 91/2025"
+    pattern-either:
+      # Template literal có biểu thức ${...}
+      - pattern: $DB.query(`...${$INPUT}...`, ...)
+      - patterns:
+          - pattern: $DB.query($SQL, ...)
+          - metavariable-regex:
+              metavariable: $SQL
+              regex: (?s)^`.*\$\{
+      # Nối chuỗi bằng dấu +
+      - pattern: $DB.query("..." + $INPUT + "...", ...)
+      - pattern: $DB.query($PREFIX + $INPUT, ...)

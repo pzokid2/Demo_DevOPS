@@ -1,0 +1,359 @@
+# .github/workflows/devsecops-selfhosted.yml
+# Pipeline DevSecOps cho OWASP Juice Shop – TOÀN BỘ chạy trên self-hosted runner Linux
+#
+#   G1  Policy-as-Code       (Conftest)            – vấn đề 3: cấu hình triển khai (POL-01..03)
+#   G2  SAST                 (Semgrep)             – vấn đề 1: SQL Injection (POL-05)
+#   G3  Test-Driven Security (node:test)           – vấn đề 2: PAN không che (POL-07)
+#   G4  Compliance-as-Code   (cinc-auditor/InSpec) – vấn đề 4: lộ đường dẫn nội bộ (POL-03)
+#   CD  Deploy bằng chính docker-compose.yml (đã qua G1) và cấu hình Nginx (đã qua G4)
+#
+# Khác bản chạy trên runner của GitHub (devsecops.yml):
+#   - Không dùng sudo: Conftest, Semgrep, Node được cài vào tool cache của runner và dùng lại.
+#   - cinc-auditor, Docker, build-essential cài MỘT LẦN bằng scripts/setup-self-hosted-runner.sh.
+#   - Stack tạm của G4 dùng cổng 18080 và tên project riêng theo run, tránh đụng dịch vụ trên máy.
+#
+# LƯU Ý: chỉ để MỘT workflow chạy theo push/pull_request. Nếu giữ cả devsecops.yml,
+# hãy Disable workflow đó trong tab Actions, nếu không mỗi lần push sẽ chạy và deploy hai lần.
+
+name: DevSecOps - Juice Shop (self-hosted)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CONFTEST_VERSION: "0.63.0"
+  SEMGREP_VERSION: "1.95.0"
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+  JUICE_SHOP_IMAGE: "bkimminich/juice-shop:v20.2.0"
+  G4_PORT: "18080"
+
+jobs:
+  # ===========================================================================
+  # G1 – Policy-as-Code: Dockerfile và docker-compose.yml phải tuân thủ policy/
+  # ===========================================================================
+  policy-gate:
+    name: "G1 · Conftest (Policy-as-Code)"
+    # Không chạy mã của PR từ fork trên máy trong lab
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Conftest into tool cache (no sudo, pin + checksum)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${CONFTEST_VERSION}"
+          DIR="${RUNNER_TOOL_CACHE}/conftest/${V}"
+          if [ ! -x "${DIR}/conftest" ]; then
+            BASE="https://github.com/open-policy-agent/conftest/releases/download/v${V}"
+            FILE="conftest_${V}_Linux_x86_64.tar.gz"
+            TMP=$(mktemp -d)
+            curl -fsSL -o "${TMP}/${FILE}" "${BASE}/${FILE}"
+            curl -fsSL -o "${TMP}/checksums.txt" "${BASE}/checksums.txt"
+            (cd "${TMP}" && grep " ${FILE}\$" checksums.txt | sha256sum -c -)
+            mkdir -p "${DIR}"
+            tar -xzf "${TMP}/${FILE}" -C "${DIR}" conftest
+            rm -rf "${TMP}"
+          fi
+          echo "${DIR}" >> "$GITHUB_PATH"
+          "${DIR}/conftest" --version
+
+      - name: Verify policies (unit tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(conftest verify --policy policy/ --no-color)
+          echo "$out"
+          echo "$out" | grep -Eq '^[1-9][0-9]* tests?,' \
+            || { echo "::error::conftest verify chạy 0 test – kiểm tra lại *_test.rego"; exit 1; }
+
+      - name: Dockerfile policy (namespace dockerfile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(conftest test Dockerfile --parser dockerfile --policy policy/ --namespace dockerfile --no-color) \
+            || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -Eq '^[1-9][0-9]* tests?,' \
+            || { echo "::error::0 test được đánh giá – sai namespace?"; exit 1; }
+
+      - name: Compose policy (namespace compose) – POL-01, POL-02, POL-03
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(conftest test docker-compose.yml --policy policy/ --namespace compose --no-color) \
+            || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -Eq '^[1-9][0-9]* tests?,' \
+            || { echo "::error::0 test được đánh giá – sai namespace?"; exit 1; }
+
+  # ===========================================================================
+  # G2 – SAST: rule SQL Injection của nhóm phải 0 ERROR
+  # ===========================================================================
+  sast-gate:
+    name: "G2 · Semgrep (SQL Injection)"
+    needs: [policy-gate]
+    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # setup-python cài Python vào tool cache của runner (không cần sudo), lần sau dùng lại
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Semgrep (pinned, reused between runs)
+        shell: bash
+        run: |
+          if [ "$(semgrep --version 2>/dev/null)" != "${SEMGREP_VERSION}" ]; then
+            python -m pip install --disable-pip-version-check -q "semgrep==${SEMGREP_VERSION}"
+          fi
+          semgrep --version
+
+      - name: Test custom rule
+        shell: bash
+        run: |
+          if ls security/rules/*.ts >/dev/null 2>&1; then
+            semgrep --test --metrics=off security/rules/
+          else
+            echo "Không có file test cho rule – bỏ qua bước này"
+          fi
+
+      # GATE: phạm vi demo là routes/login.ts (routes/search.ts có cùng lỗi, đang ở backlog)
+      - name: SQL Injection gate (hard fail)
+        run: |
+          semgrep scan \
+            --config security/rules/juice-shop-sqli.yml \
+            --metrics=off \
+            --error \
+            routes/login.ts
+
+      - name: Full SAST report (soft fail)
+        if: always()
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --metrics=off \
+            --sarif --output semgrep.sarif \
+            routes/ lib/ models/ || true
+
+      - name: Upload SAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g2-semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ===========================================================================
+  # G3 – Test-Driven Security: POL-07 (PAN phải được che khi trả về và khi lưu)
+  # ===========================================================================
+  tds-gate:
+    name: "G3 · Test-Driven Security (POL-07)"
+    needs: [sast-gate]
+    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # setup-node cài Node vào tool cache; ~/.npm trên máy runner được giữ giữa các lần chạy
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies (no frontend build)
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm rebuild sqlite3
+
+      - name: Create test placeholders
+        shell: bash
+        run: |
+          mkdir -p build frontend/dist/frontend
+          for f in index.html styles.css main.js polyfills.js hacking-instructor-x.js; do
+            touch "frontend/dist/frontend/$f"
+          done
+          touch build/server.js
+
+      - name: Run security tests (hard fail)
+        run: |
+          node --import ./test/api/helpers/test-env.mjs --import tsx \
+               --test --test-force-exit \
+               --test-reporter=tap   --test-reporter-destination=stdout \
+               --test-reporter=junit --test-reporter-destination=tds-junit.xml \
+               "test/api/security/**/*.test.ts"
+
+      - name: Upload TDS report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g3-tds-junit
+          path: tds-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ===========================================================================
+  # G4 – Compliance-as-Code: stack tạm (Juice Shop + Nginx) trên chính máy runner
+  # ===========================================================================
+  inspec-gate:
+    name: "G4 · InSpec (đường dẫn nội bộ)"
+    needs: [tds-gate]
+    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    timeout-minutes: 20
+    env:
+      G4_PROJECT: juice-shop-g4-${{ github.run_id }}
+      G4_URL: http://127.0.0.1:18080
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check cinc-auditor / InSpec
+        shell: bash
+        run: |
+          if command -v cinc-auditor >/dev/null; then
+            echo "AUDITOR=cinc-auditor" >> "$GITHUB_ENV"; cinc-auditor version
+          elif command -v inspec >/dev/null; then
+            echo "AUDITOR=inspec" >> "$GITHUB_ENV"; inspec version --chef-license=accept-silent
+          else
+            echo "::error::Chưa cài cinc-auditor trên runner – chạy scripts/setup-self-hosted-runner.sh một lần"
+            exit 1
+          fi
+
+      - name: Start temporary stack (Juice Shop + Nginx)
+        run: docker compose -p "$G4_PROJECT" -f docker-compose.g4.yml up -d
+
+      - name: Wait for app behind Nginx
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "$G4_URL/" >/dev/null; then
+              echo "Stack tạm sẵn sàng sau $((i*3)) giây"; exit 0
+            fi
+            sleep 3
+          done
+          docker compose -p "$G4_PROJECT" -f docker-compose.g4.yml logs --tail 50
+          exit 1
+
+      - name: Run compliance profile (hard fail)
+        shell: bash
+        run: |
+          EXTRA=""
+          [ "$AUDITOR" = "inspec" ] && EXTRA="--chef-license=accept-silent"
+          $AUDITOR exec compliance/exposure $EXTRA \
+            --input app_url="$G4_URL" \
+            --reporter cli json:g4-inspec.json
+
+      - name: Upload InSpec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g4-inspec-json
+          path: g4-inspec.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down temporary stack
+        if: always()
+        run: docker compose -p "$G4_PROJECT" -f docker-compose.g4.yml down -v
+
+  # ===========================================================================
+  # CD – chỉ khi push vào main và đã qua G1, G2, G3, G4
+  # ===========================================================================
+  cd-deploy:
+    name: "CD · Deploy Juice Shop"
+    needs: [policy-gate, sast-gate, tds-gate, inspec-gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, devsecops-cd]
+    timeout-minutes: 90
+    concurrency:
+      group: deploy-juice-shop
+      cancel-in-progress: false
+    env:
+      APP_CONTAINER: juice-shop-cd-lab
+      NGINX_CONTAINER: juice-shop-cd-nginx
+      IMAGE_REPO: juice-shop-cd
+      APP_URL: http://127.0.0.1:3002     # Nginx; đổi theo cổng trong docker-compose.yml
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify Docker
+        run: docker info --format '{{.ServerVersion}}' && docker compose version
+
+      - name: Remember current image (for rollback)
+        shell: bash
+        run: |
+          PREV_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$APP_CONTAINER" 2>/dev/null || true)
+          PREV_TAG="${PREV_IMAGE##*:}"
+          [ "$PREV_IMAGE" = "$PREV_TAG" ] && PREV_TAG=""
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+          echo "Bản đang chạy: ${PREV_IMAGE:-<chưa có>}"
+
+      - name: Build image (tag = commit SHA)
+        run: IMAGE_TAG=${GITHUB_SHA} docker compose -f docker-compose.yml build
+
+      - name: Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f "$APP_CONTAINER" "$NGINX_CONTAINER" 2>/dev/null || true
+          IMAGE_TAG=${GITHUB_SHA} docker compose -f docker-compose.yml up -d --no-build
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "$APP_URL/" > /dev/null; then
+              echo "CD DEPLOYMENT SUCCESS: ${IMAGE_REPO}:${GITHUB_SHA}"
+              exit 0
+            fi
+            sleep 3
+          done
+          docker logs --tail 50 "$APP_CONTAINER" || true
+          docker logs --tail 50 "$NGINX_CONTAINER" || true
+          exit 1
+
+      - name: Post-deploy smoke test
+        shell: bash
+        run: |
+          fail=0
+          for p in /ftp /FTP /support/logs /encryptionkeys /metrics; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL$p")
+            printf "%-18s %s\n" "$p" "$code"
+            case "$code" in 403|404) ;; *) fail=1 ;; esac
+          done
+          exit $fail
+
+      - name: Rollback to previous image
+        if: failure() && env.PREV_TAG != ''
+        shell: bash
+        run: |
+          echo "Deploy lỗi – rollback về ${IMAGE_REPO}:${PREV_TAG}"
+          docker rm -f "$APP_CONTAINER" "$NGINX_CONTAINER" 2>/dev/null || true
+          IMAGE_TAG=${PREV_TAG} docker compose -f docker-compose.yml up -d --no-build
+
+      - name: Clean old images
+        if: success()
+        shell: bash
+        run: |
+          docker images "$IMAGE_REPO" --format '{{.Tag}}' \
+            | grep -v -x -e "$GITHUB_SHA" -e "${PREV_TAG:-none}" \
+            | xargs -r -I{} docker rmi "${IMAGE_REPO}:{}" || true
+          docker image prune -f

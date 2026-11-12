@@ -1,0 +1,10 @@
+name: juice-shop-exposure
+title: Juice Shop – không để lộ đường dẫn nội bộ qua reverse proxy
+summary: POL-03, POL-11; GDPR Art. 5(1)(f), 25, 32; Luật 91/2025/QH15
+version: 1.0.0
+supports:
+  - platform-family: linux
+inputs:
+  - name: app_url
+    type: String
+    value: http://127.0.0.1:8080

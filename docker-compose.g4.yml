@@ -1,0 +1,21 @@
+# docker-compose.g4.yml – stack TẠM cho gate G4 (dựng, kiểm tra, rồi xóa)
+# Dùng image Juice Shop gốc để khỏi build lại (~10 phút): G4 kiểm tra CẤU HÌNH NGINX,
+# và dùng CHÍNH file deploy/nginx/juice-shop.conf sẽ được deploy.
+# G4_PORT: 8080 trên runner của GitHub (mặc định); 18080 trên self-hosted runner
+# để không đụng dịch vụ đang chạy trên máy (ví dụ cAdvisor dùng 8080).
+name: juice-shop-g4
+
+services:
+  juice-shop:
+    image: ${JUICE_SHOP_IMAGE:-bkimminich/juice-shop:v20.2.0}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    depends_on: [juice-shop]
+    ports: ["127.0.0.1:${G4_PORT:-8080}:8080"]
+    volumes:
+      - ./deploy/nginx/juice-shop.conf:/etc/nginx/conf.d/default.conf:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
