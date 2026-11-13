@@ -18,7 +18,7 @@ InferCreationAttributes<Card>
   declare UserId: number
   declare id: CreationOptional<number>
   declare fullName: string
-  declare cardNum: number
+  declare cardNum: string
   declare expMonth: number
   declare expYear: number
 }
@@ -36,11 +36,9 @@ const CardModelInit = (sequelize: Sequelize) => {
       },
       fullName: DataTypes.STRING,
       cardNum: {
-        type: DataTypes.INTEGER,
+        type: DataTypes.STRING(16),
         validate: {
-          isInt: true,
-          min: 1000000000000000,
-          max: 9999999999999998
+          is: /^\*{12}\d{4}$/ // POL-07: chỉ lưu PAN đã che
         }
       },
       expMonth: {

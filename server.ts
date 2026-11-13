@@ -54,6 +54,7 @@ import logger from './lib/logger'
 import * as utils from './lib/utils'
 import * as antiCheat from './lib/antiCheat'
 import * as security from './lib/insecurity'
+import { maskCardNumber } from './lib/cardMasking' // POL-07
 import validateConfig from './lib/startup/validateConfig'
 import cleanupFtpFolder from './lib/startup/cleanupFtpFolder'
 import customizeEasterEgg from './lib/startup/customizeEasterEgg' // vuln-code-snippet hide-line
@@ -454,7 +455,7 @@ function configureApp (app: ReturnType<typeof express>, seq: typeof sequelize) {
   app.use('/api/PrivacyRequests', security.isAuthorized())
   app.use('/api/PrivacyRequests/:id', security.isAuthorized())
   /* PaymentMethodRequests: Only allowed for authenticated users */
-  app.post('/api/Cards', security.appendUserId())
+  app.post('/api/Cards', security.appendUserId(), maskCardNumber()) // POL-07: che PAN trước khi lưu
   app.get('/api/Cards', security.appendUserId(), utils.asyncHandler(payment.getPaymentMethods()))
   app.put('/api/Cards/:id', security.denyAll())
   app.delete('/api/Cards/:id', security.appendUserId(), utils.asyncHandler(payment.delPaymentMethodById()))
