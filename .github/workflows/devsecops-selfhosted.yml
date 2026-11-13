@@ -269,9 +269,15 @@ jobs:
       - name: Run compliance profile (hard fail)
         shell: bash
         run: |
+          # WSL: bỏ /mnt/c/... khỏi PATH để Train không nhận nhầm là Windows
+          export PATH=$(echo "$PATH" | tr ':' '\n' | grep -Ev '^/mnt/[a-zA-Z]/' | paste -sd:)
+          if command -v cmd.exe >/dev/null; then
+            echo "::error::cmd.exe vẫn có trong PATH"; exit 1
+          fi
+
           EXTRA=""
           [ "$AUDITOR" = "inspec" ] && EXTRA="--chef-license=accept-silent"
-          $AUDITOR exec compliance/exposure $EXTRA \
+          $AUDITOR exec compliance/exposure $EXTRA --no-distinct-exit \
             --input app_url="$G4_URL" \
             --reporter cli json:g4-inspec.json
 
